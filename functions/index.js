@@ -36,13 +36,32 @@ exports.pedidos = functions.firestore
   .document("/empresas/{empresaId}/pedidos/{id}")
   .onWrite(async (change, context) => {
     const empresaId = context.params.empresaId;
-
+    const pedidoId = context.params.id;
     // Get an object with the current document value.
     // If the document does not exist, it has been deleted.
     const document = change.after.exists ? change.after.data() : null;
 
     // Get an object with the previous document value (for update or delete)
     const oldDocument = change.before.data();
+
+    const pedidoRef = db
+      .collection("empresas")
+      .doc(empresaId)
+      .collection("pedidos")
+      .doc(pedidoId);
+
+    let FieldValue = require("firebase-admin").firestore.FieldValue;
+
+    if (!change.before.exists) {
+      // new document created : add one to count
+      pedidoRef.update({ numero: FieldValue.increment(1) });
+      console.log("%s numberOfDocs incremented by 1", pedidoId);
+    }
+
+    if (document.numero > 0 && oldDocument && oldDocument.numero === 0)
+      return null;
+
+    if (oldDocument && oldDocument.saldo !== document.saldo) return null;
 
     if (document) {
       if (oldDocument) {
@@ -82,6 +101,30 @@ exports.pedidos = functions.firestore
       } else {
         console.log("se creo un nuevo pedido");
       }
+
+      let saldo = 0;
+      document.productos.map(async (p) => {
+        saldo += p.precio;
+      });
+      saldo += document.flete;
+
+      let pagos = await db
+        .collection("empresas")
+        .doc(empresaId)
+        .collection("pagos")
+        .where("pedido", "==", pedidoId)
+        .get();
+
+      pagos.docs.map((p) => {
+        let doc = p.data();
+        saldo -= doc.monto;
+      });
+
+      console.log("registando saldo: " + saldo);
+      if (document.saldo !== saldo) {
+        pedidoRef.update({ saldo });
+      }
+
       return Promise.all(
         document.productos.map(async (p) => {
           if (!p.color) return;

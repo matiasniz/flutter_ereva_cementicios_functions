@@ -32,6 +32,43 @@ exports.movCaja = functions.firestore
       }));
   });
 
+exports.pago = functions.firestore
+  .document("/empresas/{empresaId}/pagos/{id}")
+  .onCreate(async (snapshot, context) => {
+    const empresaId = context.params.empresaId;
+    const document = snapshot.data();
+
+    let pedidoRef = db
+      .collection("empresas")
+      .doc(empresaId)
+      .collection("pedidos")
+      .doc(document.pedido);
+
+    await db.collection("empresas").doc(empresaId).collection("mov_cajas").add({
+      caja: document.caja,
+      concepto: "Pago de pedido",
+      pedido: document.pedido,
+      comentario: "Ingreso por pago de pedido",
+      monto: document.monto,
+      fecha: new Date(),
+    });
+
+    return (transaction = db
+      .runTransaction((t) => {
+        return t.get(pedidoRef).then((doc) => {
+          let newSaldo = doc.data().saldo - document.monto;
+
+          t.update(pedidoRef, { saldo: newSaldo });
+        });
+      })
+      .then((result) => {
+        console.log("Transaction success", result);
+      })
+      .catch((err) => {
+        console.log("Transaction failure:", err);
+      }));
+  });
+
 exports.pedidos = functions.firestore
   .document("/empresas/{empresaId}/pedidos/{id}")
   .onWrite(async (change, context) => {
@@ -50,12 +87,14 @@ exports.pedidos = functions.firestore
       .collection("pedidos")
       .doc(pedidoId);
 
-    let FieldValue = require("firebase-admin").firestore.FieldValue;
-
     if (!change.before.exists) {
-      // new document created : add one to count
-      pedidoRef.update({ numero: FieldValue.increment(1) });
-      console.log("%s numberOfDocs incremented by 1", pedidoId);
+      let pedidos = await db
+        .collection("empresas")
+        .doc(empresaId)
+        .collection("pedidos")
+        .get();
+
+      pedidoRef.update({ numero: pedidos.docs.length });
     }
 
     if (document.numero > 0 && oldDocument && oldDocument.numero === 0)
@@ -102,28 +141,68 @@ exports.pedidos = functions.firestore
         console.log("se creo un nuevo pedido");
       }
 
+      if (oldDocument && oldDocument.estado === 0 && document.estado === 3) {
+        let pagos = await db
+          .collection("empresas")
+          .doc(empresaId)
+          .collection("pagos")
+          .where("pedido", "==", pedidoId)
+          .get();
+        return Promise.all(
+          pagos.docs.map((p) => {
+            let dataPago = p.data();
+            let mov = {
+              fecha: new Date(),
+              caja: dataPago.caja,
+              monto: dataPago.monto * -1,
+              pedido: pedidoId,
+              concepto: "Pedido anulado",
+              comentario: "Por anulacion de pedido",
+            };
+            return db
+              .collection("empresas")
+              .doc(empresaId)
+              .collection("mov_cajas")
+              .add(mov);
+          })
+        );
+        return null;
+      }
+
+      if (document.estado == 3) {
+        console.log("aqui no debio haber entrado..");
+      }
+      /**
+       * re calculando total para registrar transaccion por diferencia
+       */
       let saldo = 0;
       document.productos.map(async (p) => {
         saldo += p.precio;
       });
       saldo += document.flete;
 
-      let pagos = await db
-        .collection("empresas")
-        .doc(empresaId)
-        .collection("pagos")
-        .where("pedido", "==", pedidoId)
-        .get();
+      let saldoAnterior = 0;
 
-      pagos.docs.map((p) => {
-        let doc = p.data();
-        saldo -= doc.monto;
+      if (change.before.exists) {
+        oldDocument.productos.map(async (p) => {
+          saldoAnterior += p.precio;
+        });
+        saldoAnterior += oldDocument.flete;
+      }
+
+      let nuevoSaldo = saldo - saldoAnterior;
+
+      //realizando transaccion
+
+      db.runTransaction((t) => {
+        return t.get(pedidoRef).then((doc) => {
+          let newSaldo = doc.data().saldo + Number(nuevoSaldo);
+
+          t.update(pedidoRef, { saldo: newSaldo });
+        });
       });
 
-      console.log("registando saldo: " + saldo);
-      if (document.saldo !== saldo) {
-        pedidoRef.update({ saldo });
-      }
+      // fin transaccion
 
       return Promise.all(
         document.productos.map(async (p) => {

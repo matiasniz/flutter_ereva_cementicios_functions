@@ -123,8 +123,6 @@ exports.pedidos = functions.firestore
                     newSaldo =
                       (doc.data().demanda ? doc.data().demanda : 0) -
                       p.cantidad;
-                  } else {
-                    newSaldo = p.cantidad;
                   }
                   t.update(productRef, { demanda: newSaldo });
                 });
@@ -166,7 +164,6 @@ exports.pedidos = functions.firestore
               .add(mov);
           })
         );
-        return null;
       }
 
       if (document.estado == 3) {
@@ -204,42 +201,62 @@ exports.pedidos = functions.firestore
 
       // fin transaccion
 
-      return Promise.all(
-        document.productos.map(async (p) => {
-          if (!p.color) return;
+      if (document.estado !== 3) {
+        return Promise.all(
+          document.productos.map(async (p) => {
+            if (!p.color) return;
 
-          let productRef = db
-            .collection("empresas")
-            .doc(empresaId)
-            .collection("stock_productos")
-            .doc(p.producto + p.color);
+            let productRef = db
+              .collection("empresas")
+              .doc(empresaId)
+              .collection("stock_productos")
+              .doc(p.producto + p.color);
 
-          let prod = await productRef.get();
-          if (prod && prod.data()) {
-            return (transaction = db
-              .runTransaction((t) => {
-                return t.get(productRef).then((doc) => {
-                  console.log("el articulo existe, actualizando demanda...");
-                  let newSaldo =
-                    (doc.data().demanda ? doc.data().demanda : 0) + p.cantidad;
-                  t.update(productRef, { demanda: newSaldo });
-                });
-              })
-              .then((result) => {
-                console.log("Transaction success", result);
-              })
-              .catch((err) => {
-                console.log("Transaction failure:", err);
-              }));
-          } else {
-            return productRef.set({
-              demanda: p.cantidad,
-              producto: p.producto,
-              color: p.color,
-              stock: 0,
-            });
-          }
-        })
-      );
+            let prod = await productRef.get();
+            if (prod && prod.data()) {
+              return (transaction = db
+                .runTransaction((t) => {
+                  return t.get(productRef).then((doc) => {
+                    let newSaldo = 0;
+                  
+                    if (document.estado !== 2){
+                      //actualiza demanda, volviendo a sumar la cantidad pedida
+                
+                      let newSaldo =
+                          (doc.data().demanda ? doc.data().demanda : 0) +
+                          p.cantidad;
+                 
+                      t.update(productRef, { demanda: newSaldo });
+                    } else {
+                      if (oldDocument.estado !== 2){
+                      // actualiza stock, restando lo entregado, siempre y cuando el estado anterior no sea entregado (evita restar stock dos veces)
+                        newSaldo =
+                            (doc.data().stock ? doc.data().stock : 0) -
+                            p.cantidad;
+                            t.update(productRef, { stock: newSaldo });
+                      }
+                    }
+                   
+                  });
+                })
+                .then((result) => {
+                  console.log("Transaction success", result);
+                })
+                .catch((err) => {
+                  console.log("Transaction failure:", err);
+                }));
+            } else {
+              return productRef.set({
+                demanda: p.cantidad,
+                producto: p.producto,
+                color: p.color,
+                stock: 0,
+              });
+            }
+          })
+        );
+      }else{
+        return true
+      }
     }
   });

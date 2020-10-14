@@ -103,7 +103,7 @@ exports.pedidos = functions.firestore
     if (oldDocument && oldDocument.saldo !== document.saldo) return null;
 
     if (document) {
-      if (oldDocument) {
+      if (oldDocument && oldDocument.estado !== 2) {
         console.log("se esta queriendo actualizar un pedido");
         await Promise.all(
           oldDocument.productos.map((p) => {
@@ -201,6 +201,8 @@ exports.pedidos = functions.firestore
 
       // fin transaccion
 
+      // alta, reparto, entregado, suspendido, deudor
+
       if (document.estado !== 3) {
         return Promise.all(
           document.productos.map(async (p) => {
@@ -218,25 +220,24 @@ exports.pedidos = functions.firestore
                 .runTransaction((t) => {
                   return t.get(productRef).then((doc) => {
                     let newSaldo = 0;
-                  
-                    if (document.estado !== 2){
+
+                    if (document.estado !== 2) {
                       //actualiza demanda, volviendo a sumar la cantidad pedida
-                
+
                       let newSaldo =
-                          (doc.data().demanda ? doc.data().demanda : 0) +
-                          p.cantidad;
-                 
+                        (doc.data().demanda ? doc.data().demanda : 0) +
+                        p.cantidad;
+
                       t.update(productRef, { demanda: newSaldo });
                     } else {
-                      if (oldDocument.estado !== 2){
-                      // actualiza stock, restando lo entregado, siempre y cuando el estado anterior no sea entregado (evita restar stock dos veces)
+                      if (oldDocument.estado !== 2) {
+                        // actualiza stock, restando lo entregado, siempre y cuando el estado anterior no sea entregado (evita restar stock dos veces)
                         newSaldo =
-                            (doc.data().stock ? doc.data().stock : 0) -
-                            p.cantidad;
-                            t.update(productRef, { stock: newSaldo });
+                          (doc.data().stock ? doc.data().stock : 0) -
+                          p.cantidad;
+                        t.update(productRef, { stock: newSaldo });
                       }
                     }
-                   
                   });
                 })
                 .then((result) => {
@@ -255,8 +256,8 @@ exports.pedidos = functions.firestore
             }
           })
         );
-      }else{
-        return true
+      } else {
+        return true;
       }
     }
   });

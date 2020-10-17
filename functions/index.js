@@ -4,6 +4,53 @@ admin.initializeApp();
 
 const db = admin.firestore();
 
+exports.nuevaCompra = functions.firestore
+  .document("/empresas/{empresaId}/compras/{id}")
+  .onCreate(async (snapshot, context) => {
+    const empresaId = context.params.empresaId;
+    const document = snapshot.data();
+
+    let materialRef = db
+      .collection("empresas")
+      .doc(empresaId)
+      .collection("materia_prima")
+      .doc(document.idMaterial);
+
+    let material = await materialRef.get();
+
+    await db
+      .collection("empresas")
+      .doc(empresaId)
+      .collection("mov_cajas")
+      .add({
+        caja: document.idCaja,
+        concepto: "Compra",
+        pedido: null,
+        comentario:
+          material.data().nombre +
+          " " +
+          document.cantidad +
+          material.data().medida,
+        fecha: new Date(),
+        monto: document.monto * -1,
+      });
+
+    return (transaction = db
+      .runTransaction((t) => {
+        return t.get(materialRef).then((doc) => {
+          let newStock = doc.data().stock + document.cantidad;
+
+          t.update(materialRef, { stock: newStock });
+        });
+      })
+      .then((result) => {
+        console.log("Transaction success", result);
+      })
+      .catch((err) => {
+        console.log("Transaction failure:", err);
+      }));
+  });
+
 exports.nuevoGasto = functions.firestore
   .document("/empresas/{empresaId}/gastos/{id}")
   .onCreate(async (snapshot, context) => {

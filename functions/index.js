@@ -4,6 +4,96 @@ admin.initializeApp();
 
 const db = admin.firestore();
 
+const restarMateriaPrimaTransaction = (empresaId, idMaterial, cantidad) => {
+  let materialRef = db
+    .collection("empresas")
+    .doc(empresaId)
+    .collection("materia_prima")
+    .doc(idMaterial);
+
+  return db
+    .runTransaction((t) => {
+      return t.get(materialRef).then((doc) => {
+        let newStock = doc.data().stock - cantidad;
+
+        t.update(materialRef, { stock: newStock });
+      });
+    })
+    .then((result) => {
+      console.log("Transaction success", result);
+    })
+    .catch((err) => {
+      console.log("Transaction failure:", err);
+    });
+};
+
+exports.produccion = functions.firestore
+  .document("/empresas/{empresaId}/produccion/{id}")
+  .onUpdate(async (change, context) => {
+    const empresaId = context.params.empresaId;
+    const document = change.after.exists ? change.after.data() : null;
+    const oldDocument = change.before.data();
+
+    if (!oldDocument.validado && document.validado) {
+      // producto producido
+      let producto = await db
+        .collection("empresas")
+        .doc(empresaId)
+        .collection("productos")
+        .doc(document.idProducto)
+        .get();
+
+      //referencia al stock del producto producido
+      let productoRef = await db
+        .collection("empresas")
+        .doc(empresaId)
+        .collection("stock_productos")
+        .doc(document.idProducto + document.idColor);
+
+      let mezcla = await db
+        .collection("empresas")
+        .doc(empresaId)
+        .collection("mezclas")
+        .doc(document.idMezcla)
+        .get();
+
+      // iterar insumos (insumoUuid) de la mezcla (cantidad) * document.multiplicador
+      // iterar en una seria de transacciones para afectar stock de materia prima
+
+      await Promise.all(
+        mezcla
+          .data()
+          .insumos.map((ins) =>
+            restarMateriaPrimaTransaction(
+              empresaId,
+              ins.insumoUuid,
+              ins.cantidad * document.multiplicador
+            )
+          )
+      );
+
+      return (transaction = db
+        .runTransaction((t) => {
+          return t.get(productoRef).then((doc) => {
+            let newStock =
+              doc.data().stock +
+              (producto.data().porMolde * document.moldes) /
+                producto.data().rinde;
+
+            t.update(productoRef, { stock: newStock });
+          });
+        })
+        .then((result) => {
+          console.log("Transaction success", result);
+        })
+        .catch((err) => {
+          console.log("Transaction failure:", err);
+        }));
+    } else {
+      return true;
+    }
+  });
+
 exports.nuevaCompra = functions.firestore
   .document("/empresas/{empresaId}/compras/{id}")
   .onCreate(async (snapshot, context) => {

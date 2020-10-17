@@ -4,6 +4,33 @@ admin.initializeApp();
 
 const db = admin.firestore();
 
+exports.nuevoGasto = functions.firestore
+  .document("/empresas/{empresaId}/gastos/{id}")
+  .onCreate(async (snapshot, context) => {
+    const empresaId = context.params.empresaId;
+    const document = snapshot.data();
+
+    let conceptoGato = await db
+      .collection("empresas")
+      .doc(empresaId)
+      .collection("conceptos_gastos")
+      .doc(document.idConcepto)
+      .get();
+
+    return db
+      .collection("empresas")
+      .doc(empresaId)
+      .collection("mov_cajas")
+      .add({
+        caja: document.idCaja,
+        concepto: "Gasto",
+        pedido: null,
+        comentario: conceptoGato.data().nombre,
+        fecha: new Date(),
+        monto: document.monto * -1,
+      });
+  });
+
 exports.movCaja = functions.firestore
   .document("/empresas/{empresaId}/mov_cajas/{id}")
   .onCreate((snapshot, context) => {

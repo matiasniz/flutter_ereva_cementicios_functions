@@ -59,16 +59,19 @@ exports.produccion = functions.firestore
 
       // iterar insumos (insumoUuid) de la mezcla (cantidad) * document.multiplicador
       // iterar en una seria de transacciones para afectar stock de materia prima
+      // (solo restara stock si "controla stock")
 
       await Promise.all(
         mezcla
           .data()
           .insumos.map((ins) =>
-            restarMateriaPrimaTransaction(
-              empresaId,
-              ins.insumoUuid,
-              ins.cantidad * document.multiplicador
-            )
+            ins.controlaStock
+              ? restarMateriaPrimaTransaction(
+                  empresaId,
+                  ins.insumoUuid,
+                  ins.cantidad * document.multiplicador
+                )
+              : true
           )
       );
 
@@ -125,20 +128,24 @@ exports.nuevaCompra = functions.firestore
         monto: document.monto * -1,
       });
 
-    return (transaction = db
-      .runTransaction((t) => {
-        return t.get(materialRef).then((doc) => {
-          let newStock = doc.data().stock + document.cantidad;
+    if (material.data().controlaStock) {
+      return (transaction = db
+        .runTransaction((t) => {
+          return t.get(materialRef).then((doc) => {
+            let newStock = doc.data().stock + document.cantidad;
 
-          t.update(materialRef, { stock: newStock });
-        });
-      })
-      .then((result) => {
-        console.log("Transaction success", result);
-      })
-      .catch((err) => {
-        console.log("Transaction failure:", err);
-      }));
+            t.update(materialRef, { stock: newStock });
+          });
+        })
+        .then((result) => {
+          console.log("Transaction success", result);
+        })
+        .catch((err) => {
+          console.log("Transaction failure:", err);
+        }));
+    } else {
+      return "no controla stock";
+    }
   });
 
 exports.nuevoGasto = functions.firestore

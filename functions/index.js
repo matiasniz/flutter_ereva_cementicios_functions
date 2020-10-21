@@ -278,13 +278,16 @@ exports.pedidos = functions.firestore
         console.log("se esta queriendo actualizar un pedido");
         await Promise.all(
           oldDocument.productos.map((p) => {
-            if (!p.color) return;
+            // if (!p.color) return;
 
             let productRef = db
               .collection("empresas")
               .doc(empresaId)
               .collection("stock_productos")
-              .doc(p.producto + p.color);
+              .doc(
+                p.producto +
+                  (p.color !== null && p.color.length > 0 ? p.color : "")
+              );
 
             return (transaction = db
               .runTransaction((t) => {
@@ -377,13 +380,16 @@ exports.pedidos = functions.firestore
       if (document.estado !== 3) {
         return Promise.all(
           document.productos.map(async (p) => {
-            if (!p.color) return;
+            // if (!p.color) return;
 
             let productRef = db
               .collection("empresas")
               .doc(empresaId)
               .collection("stock_productos")
-              .doc(p.producto + p.color);
+              .doc(
+                p.producto +
+                  (p.color !== null && p.color.length > 0 ? p.color : "")
+              );
 
             let prod = await productRef.get();
             if (prod && prod.data()) {
@@ -421,7 +427,7 @@ exports.pedidos = functions.firestore
               return productRef.set({
                 demanda: p.cantidad,
                 producto: p.producto,
-                color: p.color,
+                color: p.color !== null && p.color.length > 0 ? p.color : "",
                 stock: 0,
               });
             }

@@ -44,54 +44,138 @@ exports.produccion = functions.firestore
         .get();
 
       //referencia al stock del producto producido
+      let docId =
+        document.idProducto + (document.idColor ? document.idColor : "");
       let productoRef = await db
         .collection("empresas")
         .doc(empresaId)
         .collection("stock_productos")
-        .doc(document.idProducto + document.idColor);
+        .doc(docId);
 
-      let mezcla = await db
+      let materiaPrimaResponse = await db
         .collection("empresas")
         .doc(empresaId)
-        .collection("mezclas")
-        .doc(document.idMezcla)
+        .collection("materia_prima")
         .get();
+
+      let listaMateriaPrima = materiaPrimaResponse.docs.map((d) => {
+        return {
+          id: d.id,
+          ...d.data(),
+        };
+      });
+
+      let insumos = [];
+      let ferrites = [];
+      if (document.idMezcla !== "personalizado") {
+        let mezcla = await db
+          .collection("empresas")
+          .doc(empresaId)
+          .collection("mezclas")
+          .doc(document.idMezcla)
+          .get();
+        if (mezcla) {
+          insumos = mezcla.data().insumos;
+        }
+      } else {
+        insumos = document.insumos;
+      }
+
+      if (
+        document.idColor !== null &&
+        document.idColor !== "personalizado" &&
+        document.idColor.length > 0
+      ) {
+        let color = await db
+          .collection("empresas")
+          .doc(empresaId)
+          .collection("colores")
+          .doc(document.idColor)
+          .get();
+        if (color) {
+          ferrites = color.data().insumos;
+        }
+      } else {
+        ferrites = document.ferrites;
+      }
 
       // iterar insumos (insumoUuid) de la mezcla (cantidad) * document.multiplicador
       // iterar en una seria de transacciones para afectar stock de materia prima
       // (solo restara stock si "controla stock")
 
       await Promise.all(
-        mezcla
-          .data()
-          .insumos.map((ins) =>
-            ins.controlaStock
+        insumos.map((ins) => {
+          let mprima = listaMateriaPrima.find((l) => l.id === ins.insumoUuid);
+          if (mprima) {
+            return mprima.controlaStock
               ? restarMateriaPrimaTransaction(
                   empresaId,
                   ins.insumoUuid,
-                  ins.cantidad * document.multiplicador
+                  ins.cantidad * document.multiplicadorMezcla
                 )
-              : true
-          )
+              : true;
+          } else {
+            return true;
+          }
+        })
       );
 
-      return (transaction = db
-        .runTransaction((t) => {
-          return t.get(productoRef).then((doc) => {
-            let newStock =
-              doc.data().stock +
-              (producto.data().porMolde * document.moldes) /
-                producto.data().rinde;
+      await Promise.all(
+        ferrites.map((ins) => {
+          let mprima = listaMateriaPrima.find((l) => l.id === ins.insumoUuid);
+          if (mprima) {
+            return mprima.controlaStock
+              ? restarMateriaPrimaTransaction(
+                  empresaId,
+                  ins.insumoUuid,
+                  ins.cantidad * document.multiplicadorColor
+                )
+              : true;
+          } else {
+            return true;
+          }
+        })
+      );
 
-            t.update(productoRef, { stock: newStock });
-          });
-        })
-        .then((result) => {
-          console.log("Transaction success", result);
-        })
-        .catch((err) => {
-          console.log("Transaction failure:", err);
-        }));
+      let productoStock = await productoRef.get();
+      if (!productoStock || !productoStock.data()) {
+        return productoRef.set({
+          demanda: 0,
+          stock: (newStock = producto.data().revestimiento
+            ? (producto.data().porMolde * document.moldes) /
+              producto.data().rinde
+            : document.moldes),
+          producto: document.idProducto,
+          color: document.idColor,
+        });
+      } else {
+        return (transaction = db
+          .runTransaction((t) => {
+            return t.get(productoRef).then((doc) => {
+              let newStock = 0;
+              if (doc && doc.data()) {
+                newStock = producto.data().revestimiento
+                  ? (doc.data().stock ? doc.data().stock : 0) +
+                    (producto.data().porMolde * document.moldes) /
+                      producto.data().rinde
+                  : document.moldes;
+              } else {
+                newStock = producto.data().revestimiento
+                  ? (producto.data().porMolde * document.moldes) /
+                    producto.data().rinde
+                  : document.moldes;
+              }
+
+              t.update(productoRef, { stock: newStock });
+            });
+          })
+          .then((result) => {
+            console.log("Transaction success", result);
+          })
+          .catch((err) => {
+            console.log("Transaction failure:", err);
+          }));
+      }
     } else {
       return true;
     }

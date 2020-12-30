@@ -4,6 +4,89 @@ admin.initializeApp();
 
 const db = admin.firestore();
 
+function loadUsers(idEmpresa) {
+  return admin
+    .firestore()
+    .collection("usuarios")
+    .where("empresa", "==", idEmpresa)
+    .get()
+    .then((snap) => snap.docs);
+}
+
+const sendNotification = async (idEmpresa, documento) => {
+  return loadUsers(idEmpresa).then((users) => {
+    let tokens = [];
+    for (let user of users) {
+      let datos = user.data();
+      if (datos.fcm && datos.rol === "admin") {
+        tokens.push(datos.fcm);
+      }
+    }
+
+    let payload = {
+      data: {
+        sound: "default",
+        id: "1",
+        status: "done",
+        action: "chatMessage",
+        body: `${documento.nombre} se encuentra por debajo del stock minimo`,
+        title: `Alerta de stock - insumo: ${documento.nombre}`,
+      },
+    };
+
+    var options = {
+      priority: "high",
+      contentAvailable: true,
+    };
+
+    return admin.messaging().sendToDevice(tokens, payload, options);
+  });
+};
+
+const registrarStockProductos = async (
+  producto,
+  stockRef,
+  cantidad,
+  idColor
+) => {
+  let productoStock = await stockRef.get();
+  if (!productoStock || !productoStock.data()) {
+    return stockRef.set({
+      demanda: 0,
+      stock: (newStock = producto.data().revestimiento
+        ? (producto.data().porMolde * cantidad) / producto.data().rinde
+        : cantidad),
+      producto: producto.id,
+      color: idColor,
+    });
+  } else {
+    return (transaction = db
+      .runTransaction((t) => {
+        return t.get(stockRef).then((doc) => {
+          let newStock = 0;
+          if (doc && doc.data()) {
+            newStock = producto.data().revestimiento
+              ? (doc.data().stock ? doc.data().stock : 0) +
+                (producto.data().porMolde * cantidad) / producto.data().rinde
+              : cantidad;
+          } else {
+            newStock = producto.data().revestimiento
+              ? (producto.data().porMolde * cantidad) / producto.data().rinde
+              : cantidad;
+          }
+
+          t.update(stockRef, { stock: newStock });
+        });
+      })
+      .then((result) => {
+        console.log("Transaction success", result);
+      })
+      .catch((err) => {
+        console.log("Transaction failure:", err);
+      }));
+  }
+};
+
 const restarMateriaPrimaTransaction = (empresaId, idMaterial, cantidad) => {
   let materialRef = db
     .collection("empresas")
@@ -13,9 +96,16 @@ const restarMateriaPrimaTransaction = (empresaId, idMaterial, cantidad) => {
 
   return db
     .runTransaction((t) => {
-      return t.get(materialRef).then((doc) => {
+      return t.get(materialRef).then(async (doc) => {
         let newStock = doc.data().stock - cantidad;
 
+        if (
+          doc.data().controlaStock &&
+          doc.data().minimo &&
+          newStock < doc.data().minimo
+        ) {
+          await sendNotification(empresaId, doc.data());
+        }
         t.update(materialRef, { stock: newStock });
       });
     })
@@ -27,6 +117,45 @@ const restarMateriaPrimaTransaction = (empresaId, idMaterial, cantidad) => {
     });
 };
 
+exports.autovalidar = functions.https.onRequest(async (req, res) => {
+  let fecha = admin.firestore.Timestamp.fromDate(
+    new Date(new Date().getTime() - 48 * 60 * 60 * 1000)
+  );
+
+  let empresasCollection = await db.collection("empresas").listDocuments();
+
+  return Promise.all(
+    empresasCollection.map((emp) => {
+      return db
+        .collection("empresas")
+        .doc(emp.id)
+        .collection("produccion")
+        .where("validado", "==", false)
+        .where("fecha", "<", fecha)
+        .get()
+        .then((datos) => {
+          return Promise.all(
+            datos.docs.map((p) => {
+              return p.ref.update({
+                validado: true,
+              });
+            })
+          ).then(() =>
+            console.log(
+              `se validaron ${datos.docs.length} documentos de la empresa ${emp.id}`
+            )
+          );
+        });
+    })
+  )
+    .then(() => {
+      res.status(200).send(`fin validacion`);
+    })
+    .catch((err) => {
+      res.status(404).send(err);
+    });
+});
+
 exports.produccion = functions.firestore
   .document("/empresas/{empresaId}/produccion/{id}")
   .onUpdate(async (change, context) => {
@@ -35,23 +164,6 @@ exports.produccion = functions.firestore
     const oldDocument = change.before.data();
 
     if (!oldDocument.validado && document.validado) {
-      // producto producido
-      let producto = await db
-        .collection("empresas")
-        .doc(empresaId)
-        .collection("productos")
-        .doc(document.idProducto)
-        .get();
-
-      //referencia al stock del producto producido
-      let docId =
-        document.idProducto + (document.idColor ? document.idColor : "");
-      let productoRef = await db
-        .collection("empresas")
-        .doc(empresaId)
-        .collection("stock_productos")
-        .doc(docId);
-
       let materiaPrimaResponse = await db
         .collection("empresas")
         .doc(empresaId)
@@ -99,10 +211,59 @@ exports.produccion = functions.firestore
         ferrites = document.ferrites;
       }
 
+      // no es revestimiento
+      // moldes => cantidad
+      if (document.idProducto && document.idProducto.length > 0) {
+        // producto producido
+        let producto = await db
+          .collection("empresas")
+          .doc(empresaId)
+          .collection("productos")
+          .doc(document.idProducto)
+          .get();
+
+        //referencia al stock del producto producido
+        let docId =
+          document.idProducto + (document.idColor ? document.idColor : "");
+        let docRef = await db
+          .collection("empresas")
+          .doc(empresaId)
+          .collection("stock_productos")
+          .doc(docId);
+
+        await registrarStockProductos(producto, docRef, document.moldes, "");
+      }
+      // sino, es revestimiento
+      else {
+        await Promise.all(
+          document.productos.map(async (p) => {
+            let producto = await db
+              .collection("empresas")
+              .doc(empresaId)
+              .collection("productos")
+              .doc(p.insumoUuid)
+              .get();
+            let docId =
+              p.insumoUuid + (document.idColor ? document.idColor : "");
+            let docRef = db
+              .collection("empresas")
+              .doc(empresaId)
+              .collection("stock_productos")
+              .doc(docId);
+
+            return registrarStockProductos(
+              producto,
+              docRef,
+              p.cantidad,
+              document.idColor || ""
+            );
+          })
+        );
+      }
+
       // iterar insumos (insumoUuid) de la mezcla (cantidad) * document.multiplicador
       // iterar en una seria de transacciones para afectar stock de materia prima
       // (solo restara stock si "controla stock")
-
       await Promise.all(
         insumos.map((ins) => {
           let mprima = listaMateriaPrima.find((l) => l.id === ins.insumoUuid);
@@ -120,7 +281,7 @@ exports.produccion = functions.firestore
         })
       );
 
-      await Promise.all(
+      return await Promise.all(
         ferrites.map((ins) => {
           let mprima = listaMateriaPrima.find((l) => l.id === ins.insumoUuid);
           if (mprima) {
@@ -136,46 +297,6 @@ exports.produccion = functions.firestore
           }
         })
       );
-
-      let productoStock = await productoRef.get();
-      if (!productoStock || !productoStock.data()) {
-        return productoRef.set({
-          demanda: 0,
-          stock: (newStock = producto.data().revestimiento
-            ? (producto.data().porMolde * document.moldes) /
-              producto.data().rinde
-            : document.moldes),
-          producto: document.idProducto,
-          color: document.idColor,
-        });
-      } else {
-        return (transaction = db
-          .runTransaction((t) => {
-            return t.get(productoRef).then((doc) => {
-              let newStock = 0;
-              if (doc && doc.data()) {
-                newStock = producto.data().revestimiento
-                  ? (doc.data().stock ? doc.data().stock : 0) +
-                    (producto.data().porMolde * document.moldes) /
-                      producto.data().rinde
-                  : document.moldes;
-              } else {
-                newStock = producto.data().revestimiento
-                  ? (producto.data().porMolde * document.moldes) /
-                    producto.data().rinde
-                  : document.moldes;
-              }
-
-              t.update(productoRef, { stock: newStock });
-            });
-          })
-          .then((result) => {
-            console.log("Transaction success", result);
-          })
-          .catch((err) => {
-            console.log("Transaction failure:", err);
-          }));
-      }
     } else {
       return true;
     }

@@ -518,7 +518,7 @@ exports.pedidos = functions.firestore
         console.log("se creo un nuevo pedido");
       }
 
-      if (oldDocument && oldDocument.estado === 0 && document.estado === 3) {
+      if (oldDocument && oldDocument.estado !== 3 && document.estado === 3) {
         let pagos = await db
           .collection("empresas")
           .doc(empresaId)
@@ -643,3 +643,26 @@ exports.pedidos = functions.firestore
       }
     }
   });
+
+exports.newuser = functions.https.onRequest(async (req, res) => {
+  let user = req.body;
+
+  let userRecord = await admin.auth().createUser({
+    email: user.email,
+    emailVerified: false,
+    password: "123456",
+    displayName: user.nombre,
+    disabled: false,
+  });
+
+  return db
+    .collection("usuarios")
+    .doc(userRecord.uid)
+    .set(user)
+    .then((datos) =>
+      console.log(`se dio de alta nuevo usuario de la empresa ${user.empresa}`)
+    )
+    .catch((err) => {
+      res.status(404).send(err);
+    });
+});

@@ -272,7 +272,7 @@ exports.produccion = functions.firestore
         // iterar insumos (insumoUuid) de la mezcla (cantidad) * document.multiplicador
         // iterar en una seria de transacciones para afectar stock de materia prima
         // (solo restara stock si "controla stock")
-        await Promise.all(
+        await Promise.allSettled(
             insumos.map((ins) => {
               const mprima = listaMateriaPrima.find((l) => l.id === ins.insumoUuid);
               if (mprima) {
@@ -289,7 +289,7 @@ exports.produccion = functions.firestore
             }),
         );
 
-        return await Promise.all(
+        return await Promise.allSettled(
             ferrites.map((ins) => {
               const mprima = listaMateriaPrima.find((l) => l.id === ins.insumoUuid);
               if (mprima) {
@@ -718,6 +718,7 @@ exports.nuevaProforma = functions.firestore
               const proforma = doc.data().proforma + 1;
 
               t.update(snapshot.ref, {proforma: proforma});
+              t.update(empresaRef, {proforma: proforma});
             });
           })
           .then((result) => {

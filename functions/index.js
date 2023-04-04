@@ -9,7 +9,6 @@ const db = admin.firestore();
 exports.autovalidacion = functions.pubsub
     .schedule("0 0 * * *")
     .onRun(async (_) => {
-      console.log("inicio autovalidacion");
       const fecha = admin.firestore.Timestamp.fromDate(
           new Date(new Date().getTime() - 48 * 60 * 60 * 1000),
       );
@@ -394,7 +393,6 @@ exports.nuevoGasto = functions.firestore
 exports.movCaja = functions.firestore
     .document("/empresas/{empresaId}/mov_cajas/{id}")
     .onCreate((snapshot, context) => {
-      console.log("inicio movCaja");
       const empresaId = context.params.empresaId;
       const document = snapshot.data();
 
@@ -702,3 +700,30 @@ exports.nuevousuario = functions.https.onRequest(async (req, res) => {
         res.status(404).send(err);
       });
 });
+
+
+exports.nuevaProforma = functions.firestore
+    .document("/empresas/{empresaId}/presupuestos/{id}")
+    .onCreate(async (snapshot, context) => {
+      console.log("inicio nuevaProforma");
+      const empresaId = context.params.empresaId;
+
+      const empresaRef = await db
+          .collection("empresas")
+          .doc(empresaId);
+
+      return (db
+          .runTransaction((t) => {
+            return t.get(empresaRef).then((doc) => {
+              const proforma = doc.data().proforma + 1;
+
+              t.update(snapshot.ref, {proforma: proforma});
+            });
+          })
+          .then((result) => {
+            console.log("Transaction success", result);
+          })
+          .catch((err) => {
+            console.log("Transaction failure:", err);
+          }));
+    });
